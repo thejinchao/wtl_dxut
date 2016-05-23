@@ -2,17 +2,16 @@
 #Copyright(C) thecodeway.com
 #
 
-cmake_minimum_required (VERSION 2.6)
+cmake_minimum_required (VERSION 3.0)
 
-include_directories(
-	${DirectX_INCLUDE_DIR}
-	../DXUT/Core
-	../DXUT/Optional
-	../WTL
+set(DEMO_SOURCE_FILES
+	Demo_Main.cpp
 )
 
-link_directories(
-	${DirectX_LIBRARY_DIR}
+include_directories(
+	../WTL
+	../DXUT/Core
+	../DXUT/Optional
 )
 
 set(DEMO_SOURCE_CPP
@@ -26,7 +25,7 @@ set(DEMO_SOURCE_CPP_PRECOMPILED
 )
 
 set(DEMO_SOURCE_INC
-	atldxut9.h
+	atldxut11.h
 	Demo_MainFrame.h
 	Demo_MainView.h
 	resource.h
@@ -60,23 +59,11 @@ add_executable(Demo WIN32
 )
 
 target_link_libraries(Demo
-	DXUTCore
-	DXUTOptional
-	d3dx10d.lib
-	d3dx9d.lib
-	dxerr.lib
+	DXUT_Core
+	DXUT_Optional
+	d3dcompiler.lib
+	usp10.lib
 	dxguid.lib
+	winmm.lib
+	comctl32.lib	
 )
-
-########
-#INSTALL
-########
-install(TARGETS Demo
-	DESTINATION .)	
-
-install(FILES  ./BasicHLSL.fx
-	DESTINATION .)
-
-install(DIRECTORY ../Media
-	DESTINATION .)
-

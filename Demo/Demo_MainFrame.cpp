@@ -20,9 +20,9 @@ BOOL CMainFrame::PreTranslateMessage(MSG* pMsg)
 //-------------------------------------------------------------------------------------------------------------------
 BOOL CMainFrame::OnIdle(void)
 {
-	UISetCheck(ID_BUTTON_LIGHT1, m_view.getLightCounts()==1);
-	UISetCheck(ID_BUTTON_LIGHT2, m_view.getLightCounts()==2);
-	UISetCheck(ID_BUTTON_LIGHT3, m_view.getLightCounts()==3);
+	UISetCheck(ID_BUTTON_LIGHT1, m_view.GetColor()==0);
+	UISetCheck(ID_BUTTON_LIGHT2, m_view.GetColor()==1);
+	UISetCheck(ID_BUTTON_LIGHT3, m_view.GetColor()==2);
 
 	UIUpdateToolBar();
 	return FALSE;
@@ -56,6 +56,6 @@ int CMainFrame::OnCreate(LPCREATESTRUCT /*lpCreateStruct*/)
 //-------------------------------------------------------------------------------------------------------------------
 LRESULT CMainFrame::OnButtonLight(WORD wNotifyCode, WORD wID, HWND hWndCtl, BOOL& bHandled)
 {
-	m_view.setLightCounts(wID-ID_BUTTON_LIGHT1+1);
+	m_view.SetColor(wID - ID_BUTTON_LIGHT1);
 	return 0;
 }

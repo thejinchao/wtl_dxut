@@ -18,7 +18,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPTSTR lp
 	HRESULT hRes = _Module.Init(NULL, hInstance);
 	hRes;
 	ATLASSERT(SUCCEEDED(hRes));
-
+	
 	//prepare mesage loop
 	CDXUTMessageLoop theLoop;
 	_Module.AddMessageLoop(&theLoop);
@@ -34,10 +34,10 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPTSTR lp
 
 	//enter message loop
 	int nRet = theLoop.Run();
-
+	
 	//end!
 	_Module.RemoveMessageLoop();
 	_Module.Term();
-	return nRet;
+	return 0;
 }
 

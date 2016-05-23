@@ -2,18 +2,25 @@
 #Copyright(C) thecodeway.com
 #
 
-cmake_minimum_required (VERSION 2.6)
+cmake_minimum_required (VERSION 3.0)
 
-include_directories(
-	${DirectX_INCLUDE_DIR}
-)
-
-add_library(DXUTCore
-	DXUT.cpp
+set(DXUT_CORE_SOURCE_FILES
+	DDSTextureLoader.h
+	dxerr.h
 	DXUT.h
-	DXUTenum.cpp
-	DXUTenum.h
-	DXUTmisc.cpp
+	DXUTDevice11.h
 	DXUTmisc.h
+	ScreenGrab.h
+	WICTextureLoader.h
+	DDSTextureLoader.cpp
+	dxerr.cpp
+	DXUT.cpp
+	DXUTDevice11.cpp
+	DXUTmisc.cpp
+	ScreenGrab.cpp
+	WICTextureLoader.cpp
 )
 
+add_library(DXUT_Core 
+	${DXUT_CORE_SOURCE_FILES} 
+)

@@ -2,35 +2,32 @@
 #Copyright(C) thecodeway.com
 #
 
-cmake_minimum_required (VERSION 2.6)
+cmake_minimum_required (VERSION 3.0)
 
-include_directories(
-	${DirectX_INCLUDE_DIR}
-	../Core
-)
-
-add_library(DXUTOptional
-	DXUTcamera.cpp
-	DXUTgui.cpp
-	DXUTguiIME.cpp
-	DXUTres.cpp
-	DXUTsettingsdlg.cpp
-	DXUTShapes.cpp
-	ImeUi.cpp
-	SDKmesh.cpp
-	SDKmisc.cpp
-	SDKsound.cpp
-	SDKwavefile.cpp
+set(DXUT_OPTIONAL_SOURCE_FILES
 	DXUTcamera.h
 	DXUTgui.h
 	DXUTguiIME.h
 	DXUTLockFreePipe.h
 	DXUTres.h
 	DXUTsettingsdlg.h
-	DXUTShapes.h
 	ImeUi.h
 	SDKmesh.h
 	SDKmisc.h
-	SDKsound.h
-	SDKwavefile.h	
+	DXUTcamera.cpp
+	DXUTgui.cpp
+	DXUTguiIME.cpp
+	DXUTres.cpp
+	DXUTsettingsdlg.cpp
+	ImeUi.cpp
+	SDKmesh.cpp
+	SDKmisc.cpp
+)
+
+include_directories(
+	../Core
+)
+
+add_library(DXUT_Optional 
+	${DXUT_OPTIONAL_SOURCE_FILES} 
 )

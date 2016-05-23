@@ -1,46 +1,64 @@
 #include "stdafx.h"
 #include "Demo_MainView.h"
 
+using namespace DirectX;
 
-//--------------------------------------------------------------------------------------
-// Global variables
-//--------------------------------------------------------------------------------------
-ID3DXFont*                  g_pFont = NULL;         // Font for drawing text
-ID3DXSprite*                g_pSprite = NULL;       // Sprite for batching draw text calls
-bool                        g_bShowHelp = true;     // If true, it renders the UI control text
-CModelViewerCamera          g_Camera;               // A model viewing camera
-ID3DXEffect*                g_pEffect = NULL;       // D3DX effect interface
-ID3DXMesh*                  g_pMesh = NULL;         // Mesh object
-IDirect3DTexture9*          g_pMeshTexture = NULL;  // Mesh texture
-CDXUTDialogResourceManager  g_DialogResourceManager; // manager for shared resources of dialogs
-CD3DSettingsDlg             g_SettingsDlg;          // Device settings dialog
-CDXUTDialog                 g_HUD;                  // manages the 3D UI
-CDXUTDialog                 g_SampleUI;             // dialog for sample specific controls
-bool                        g_bEnablePreshader;     // if TRUE, then D3DXSHADER_NO_PRESHADER is used when compiling the shader
-D3DXMATRIXA16               g_mCenterWorld;
+//-------------------------------------------------------------------------------------------------------------------
+struct SimpleVertex
+{
+	XMFLOAT3 Pos;
+	XMFLOAT2 Tex;
+};
 
-#define MAX_LIGHTS 3
-CDXUTDirectionWidget		g_LightControl[MAX_LIGHTS];
-float                       g_fLightScale;
-int                         g_nNumActiveLights;
-int                         g_nActiveLight;
+struct CBChangesEveryFrame
+{
+	XMFLOAT4X4 mWorldViewProj;
+	XMFLOAT4X4 mWorld;
+	XMFLOAT4 vMeshColor;
+};
 
+//-------------------------------------------------------------------------------------------------------------------
+const char* m_shaderString = 
+"cbuffer cbChangesEveryFrame : register( b0 )\r\n"
+"{\r\n"
+"    matrix WorldViewProj;\r\n"
+"    matrix World;\r\n"
+"    float4 vMeshColor;\r\n"
+"};\r\n"
+"\r\n"
+"struct VS_INPUT\r\n"
+"{\r\n"
+"    float4 Pos : POSITION;\r\n"
+"};\r\n"
+"\r\n"
+"struct PS_INPUT\r\n"
+"{\r\n"
+"    float4 Pos : SV_POSITION;\r\n"
+"};\r\n"
+"\r\n"
+"PS_INPUT VS( VS_INPUT input )\r\n"
+"{\r\n"
+"    PS_INPUT output = (PS_INPUT)0;\r\n"
+"    output.Pos = mul( input.Pos, WorldViewProj );\r\n"
+"    return output;\r\n"
+"}\r\n"
+"\r\n"
+"float4 PS( PS_INPUT input) : SV_Target\r\n"
+"{\r\n"
+"    return vMeshColor;\r\n"
+"}\r\n";
 
-//--------------------------------------------------------------------------------------
-// UI control IDs
-//--------------------------------------------------------------------------------------
-#define IDC_TOGGLEFULLSCREEN    1
-#define IDC_TOGGLEREF           3
-#define IDC_CHANGEDEVICE        4
-#define IDC_ENABLE_PRESHADER    5
-#define IDC_NUM_LIGHTS          6
-#define IDC_NUM_LIGHTS_STATIC   7
-#define IDC_ACTIVE_LIGHT        8
-#define IDC_LIGHT_SCALE         9
-#define IDC_LIGHT_SCALE_STATIC  10
 
 //-------------------------------------------------------------------------------------------------------------------
 CMainView::CMainView()
+	: m_pVertexShader(nullptr)
+	, m_pPixelShader(nullptr)
+	, m_pVertexLayout(nullptr)
+	, m_pVertexBuffer(nullptr)
+	, m_pIndexBuffer(nullptr)
+	, m_pCBChangesEveryFrame(nullptr)
+	, m_vMeshColor(0.7f, 0.7f, 0.7f, 1.0f)
+	, m_colorIndex(0)
 {
 }
 
@@ -49,591 +67,291 @@ CMainView::~CMainView()
 {
 }
 
-//--------------------------------------------------------------------------------------
-bool CMainView::IsDeviceAcceptable(D3DCAPS9* pCaps, D3DFORMAT AdapterFormat, D3DFORMAT BackBufferFormat, bool bWindowed)
-{
-    // No fallback defined by this app, so reject any device that 
-    // doesn't support at least ps2.0
-    if( pCaps->PixelShaderVersion < D3DPS_VERSION( 2, 0 ) )
-        return false;
-
-    // Skip backbuffer formats that don't support alpha blending
-    IDirect3D9* pD3D = DXUTGetD3D9Object();
-    if( FAILED( pD3D->CheckDeviceFormat( pCaps->AdapterOrdinal, pCaps->DeviceType,
-                                         AdapterFormat, D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING,
-                                         D3DRTYPE_TEXTURE, BackBufferFormat ) ) )
-        return false;
-
-    return true;
-}
-
-//--------------------------------------------------------------------------------------
-void CMainView::OnGUIEvent( UINT nEvent, int nControlID, CDXUTControl* pControl)
-{
-   switch( nControlID )
-    {
-        case IDC_TOGGLEFULLSCREEN:
-            DXUTToggleFullScreen(); break;
-        case IDC_TOGGLEREF:
-            DXUTToggleREF(); break;
-        case IDC_CHANGEDEVICE:
-            g_SettingsDlg.SetActive( !g_SettingsDlg.IsActive() ); break;
-
-        case IDC_ENABLE_PRESHADER:
-        {
-            g_bEnablePreshader = g_SampleUI.GetCheckBox( IDC_ENABLE_PRESHADER )->GetChecked();
-
-            if( DXUTGetD3D9Device() != NULL )
-            {
-                OnLostDevice( );
-                OnDestroyDevice( );
-                OnCreateDevice( DXUTGetD3D9Device(), DXUTGetD3D9BackBufferSurfaceDesc() );
-                OnResetDevice( DXUTGetD3D9Device(), DXUTGetD3D9BackBufferSurfaceDesc() );
-            }
-            break;
-        }
-
-        case IDC_ACTIVE_LIGHT:
-            if( !g_LightControl[g_nActiveLight].IsBeingDragged() )
-            {
-                g_nActiveLight++;
-                g_nActiveLight %= g_nNumActiveLights;
-            }
-            break;
-
-        case IDC_NUM_LIGHTS:
-            if( !g_LightControl[g_nActiveLight].IsBeingDragged() )
-            {
-                WCHAR sz[100];
-                swprintf_s( sz, 100, L"# Lights: %d", g_SampleUI.GetSlider( IDC_NUM_LIGHTS )->GetValue() );
-                g_SampleUI.GetStatic( IDC_NUM_LIGHTS_STATIC )->SetText( sz );
-
-                g_nNumActiveLights = g_SampleUI.GetSlider( IDC_NUM_LIGHTS )->GetValue();
-                g_nActiveLight %= g_nNumActiveLights;
-            }
-            break;
-
-        case IDC_LIGHT_SCALE:
-            g_fLightScale = ( float )( g_SampleUI.GetSlider( IDC_LIGHT_SCALE )->GetValue() * 0.10f );
-
-            WCHAR sz[100];
-            swprintf_s( sz, 100, L"Light scale: %0.2f", g_fLightScale );
-            g_SampleUI.GetStatic( IDC_LIGHT_SCALE_STATIC )->SetText( sz );
-            break;
-    }
-}
-
 //-------------------------------------------------------------------------------------------------------------------
-int CMainView::getLightCounts(void) const
+bool CMainView::IsD3D11DeviceAcceptable(const CD3D11EnumAdapterInfo *AdapterInfo, UINT Output, const CD3D11EnumDeviceInfo *DeviceInfo,
+	DXGI_FORMAT BackBufferFormat, bool bWindowed)
 {
-	return g_nNumActiveLights;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-void CMainView::setLightCounts(int counts)
-{
-	g_nNumActiveLights = counts;
-	g_nActiveLight %= g_nNumActiveLights;
-
-	WCHAR sz[100];
-	swprintf_s( sz, 100, L"# Lights: %d", g_nNumActiveLights );
-	g_SampleUI.GetStatic( IDC_NUM_LIGHTS_STATIC )->SetText( sz );
-
-	g_SampleUI.GetSlider( IDC_NUM_LIGHTS )->SetValue(g_nNumActiveLights);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-void InitApp(void* pUserContext)
-{
-    g_bEnablePreshader = true;
-
-    for( int i = 0; i < MAX_LIGHTS; i++ )
-        g_LightControl[i].SetLightDirection( D3DXVECTOR3( sinf( D3DX_PI * 2 * i / MAX_LIGHTS - D3DX_PI / 6 ),
-                                                          0, -cosf( D3DX_PI * 2 * i / MAX_LIGHTS - D3DX_PI / 6 ) ) );
-
-    g_nActiveLight = 0;
-    g_nNumActiveLights = 1;
-    g_fLightScale = 1.0f;
-
-    // Initialize dialogs
-    g_SettingsDlg.Init( &g_DialogResourceManager );
-    g_HUD.Init( &g_DialogResourceManager );
-    g_SampleUI.Init( &g_DialogResourceManager );
-
-	g_HUD.SetCallback( CMainView::s_OnGUIEvent, pUserContext ); int iY = 10;
-    g_HUD.AddButton( IDC_TOGGLEFULLSCREEN, L"Toggle full screen", 35, iY, 125, 22 );
-    g_HUD.AddButton( IDC_TOGGLEREF, L"Toggle REF (F3)", 35, iY += 24, 125, 22 );
-    g_HUD.AddButton( IDC_CHANGEDEVICE, L"Change device (F2)", 35, iY += 24, 125, 22, VK_F2 );
-
-    g_SampleUI.SetCallback( CMainView::s_OnGUIEvent, pUserContext ); iY = 10;
-
-    WCHAR sz[100];
-    iY += 24;
-    swprintf_s( sz, 100, L"# Lights: %d", g_nNumActiveLights );
-    g_SampleUI.AddStatic( IDC_NUM_LIGHTS_STATIC, sz, 35, iY += 24, 125, 22 );
-    g_SampleUI.AddSlider( IDC_NUM_LIGHTS, 50, iY += 24, 100, 22, 1, MAX_LIGHTS, g_nNumActiveLights );
-
-    iY += 24;
-    swprintf_s( sz, 100, L"Light scale: %0.2f", g_fLightScale );
-    g_SampleUI.AddStatic( IDC_LIGHT_SCALE_STATIC, sz, 35, iY += 24, 125, 22 );
-    g_SampleUI.AddSlider( IDC_LIGHT_SCALE, 50, iY += 24, 100, 22, 0, 20, ( int )( g_fLightScale * 10.0f ) );
-
-    iY += 24;
-    g_SampleUI.AddButton( IDC_ACTIVE_LIGHT, L"Change active light (K)", 35, iY += 24, 125, 22, 'K' );
-    g_SampleUI.AddCheckBox( IDC_ENABLE_PRESHADER, L"Enable preshaders", 35, iY += 24, 125, 22, g_bEnablePreshader );
-}
-
-//--------------------------------------------------------------------------------------
-// This function loads the mesh and ensures the mesh has normals; it also optimizes the 
-// mesh for the graphics card's vertex cache, which improves performance by organizing 
-// the internal triangle list for less cache misses.
-//--------------------------------------------------------------------------------------
-HRESULT LoadMesh( IDirect3DDevice9* pd3dDevice, WCHAR* strFileName, ID3DXMesh** ppMesh )
-{
-    ID3DXMesh* pMesh = NULL;
-    WCHAR str[MAX_PATH];
-    HRESULT hr;
-
-    // Load the mesh with D3DX and get back a ID3DXMesh*.  For this
-    // sample we'll ignore the X file's embedded materials since we know 
-    // exactly the model we're loading.  See the mesh samples such as
-    // "OptimizedMesh" for a more generic mesh loading example.
-    V_RETURN( DXUTFindDXSDKMediaFileCch( str, MAX_PATH, strFileName ) );
-    V_RETURN( D3DXLoadMeshFromX( str, D3DXMESH_MANAGED, pd3dDevice, NULL, NULL, NULL, NULL, &pMesh ) );
-
-    DWORD* rgdwAdjacency = NULL;
-
-    // Make sure there are normals which are required for lighting
-    if( !( pMesh->GetFVF() & D3DFVF_NORMAL ) )
-    {
-        ID3DXMesh* pTempMesh;
-        V( pMesh->CloneMeshFVF( pMesh->GetOptions(),
-                                pMesh->GetFVF() | D3DFVF_NORMAL,
-                                pd3dDevice, &pTempMesh ) );
-        V( D3DXComputeNormals( pTempMesh, NULL ) );
-
-        SAFE_RELEASE( pMesh );
-        pMesh = pTempMesh;
-    }
-
-    // Optimize the mesh for this graphics card's vertex cache 
-    // so when rendering the mesh's triangle list the vertices will 
-    // cache hit more often so it won't have to re-execute the vertex shader 
-    // on those vertices so it will improve perf.     
-    rgdwAdjacency = new DWORD[pMesh->GetNumFaces() * 3];
-    if( rgdwAdjacency == NULL )
-        return E_OUTOFMEMORY;
-    V( pMesh->GenerateAdjacency( 1e-6f, rgdwAdjacency ) );
-    V( pMesh->OptimizeInplace( D3DXMESHOPT_VERTEXCACHE, rgdwAdjacency, NULL, NULL, NULL ) );
-    delete []rgdwAdjacency;
-
-    *ppMesh = pMesh;
-
-    return S_OK;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-HRESULT CMainView::OnCreateDevice(IDirect3DDevice9* pd3dDevice, const D3DSURFACE_DESC* pBackBufferSurfaceDesc)
-{
-	InitApp(this);
-
-    HRESULT hr;
-
-    V_RETURN( g_DialogResourceManager.OnD3D9CreateDevice( pd3dDevice ) );
-    V_RETURN( g_SettingsDlg.OnD3D9CreateDevice( pd3dDevice ) );
-    // Initialize the font
-    V_RETURN( D3DXCreateFont( pd3dDevice, 15, 0, FW_BOLD, 1, FALSE, DEFAULT_CHARSET,
-                              OUT_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                              L"Arial", &g_pFont ) );
-
-    // Load the mesh
-    V_RETURN( LoadMesh( pd3dDevice, L"tiny\\tiny.x", &g_pMesh ) );
-
-    D3DXVECTOR3* pData;
-    D3DXVECTOR3 vCenter;
-    FLOAT fObjectRadius;
-    V( g_pMesh->LockVertexBuffer( 0, ( LPVOID* )&pData ) );
-    V( D3DXComputeBoundingSphere( pData, g_pMesh->GetNumVertices(),
-                                  D3DXGetFVFVertexSize( g_pMesh->GetFVF() ), &vCenter, &fObjectRadius ) );
-    V( g_pMesh->UnlockVertexBuffer() );
-
-    D3DXMatrixTranslation( &g_mCenterWorld, -vCenter.x, -vCenter.y, -vCenter.z );
-    D3DXMATRIXA16 m;
-    D3DXMatrixRotationY( &m, D3DX_PI );
-    g_mCenterWorld *= m;
-    D3DXMatrixRotationX( &m, D3DX_PI / 2.0f );
-    g_mCenterWorld *= m;
-
-    V_RETURN( CDXUTDirectionWidget::StaticOnD3D9CreateDevice( pd3dDevice ) );
-    for( int i = 0; i < MAX_LIGHTS; i++ )
-        g_LightControl[i].SetRadius( fObjectRadius );
-
-    // Define DEBUG_VS and/or DEBUG_PS to debug vertex and/or pixel shaders with the 
-    // shader debugger. Debugging vertex shaders requires either REF or software vertex 
-    // processing, and debugging pixel shaders requires REF.  The 
-    // D3DXSHADER_FORCE_*_SOFTWARE_NOOPT flag improves the debug experience in the 
-    // shader debugger.  It enables source level debugging, prevents instruction 
-    // reordering, prevents dead code elimination, and forces the compiler to compile 
-    // against the next higher available software target, which ensures that the 
-    // unoptimized shaders do not exceed the shader model limitations.  Setting these 
-    // flags will cause slower rendering since the shaders will be unoptimized and 
-    // forced into software.  See the DirectX documentation for more information about 
-    // using the shader debugger.
-    DWORD dwShaderFlags = D3DXFX_NOT_CLONEABLE;
-
-#if defined( DEBUG ) || defined( _DEBUG )
-    // Set the D3DXSHADER_DEBUG flag to embed debug information in the shaders.
-    // Setting this flag improves the shader debugging experience, but still allows 
-    // the shaders to be optimized and to run exactly the way they will run in 
-    // the release configuration of this program.
-    dwShaderFlags |= D3DXSHADER_DEBUG;
-    #endif
-
-#ifdef DEBUG_VS
-        dwShaderFlags |= D3DXSHADER_FORCE_VS_SOFTWARE_NOOPT;
-    #endif
-#ifdef DEBUG_PS
-        dwShaderFlags |= D3DXSHADER_FORCE_PS_SOFTWARE_NOOPT;
-    #endif
-
-    // Preshaders are parts of the shader that the effect system pulls out of the 
-    // shader and runs on the host CPU. They should be used if you are GPU limited. 
-    // The D3DXSHADER_NO_PRESHADER flag disables preshaders.
-    if( !g_bEnablePreshader )
-        dwShaderFlags |= D3DXSHADER_NO_PRESHADER;
-
-    // Read the D3DX effect file
-    WCHAR str[MAX_PATH];
-    V_RETURN( DXUTFindDXSDKMediaFileCch( str, MAX_PATH, L"BasicHLSL.fx" ) );
-
-    // If this fails, there should be debug output as to 
-    // why the .fx file failed to compile
-    V_RETURN( D3DXCreateEffectFromFile( pd3dDevice, str, NULL, NULL, dwShaderFlags, NULL, &g_pEffect, NULL ) );
-
-    // Create the mesh texture from a file
-    V_RETURN( DXUTFindDXSDKMediaFileCch( str, MAX_PATH, L"tiny\\tiny_skin.dds" ) );
-
-    V_RETURN( D3DXCreateTextureFromFileEx( pd3dDevice, str, D3DX_DEFAULT, D3DX_DEFAULT,
-                                           D3DX_DEFAULT, 0, D3DFMT_UNKNOWN, D3DPOOL_MANAGED,
-                                           D3DX_DEFAULT, D3DX_DEFAULT, 0,
-                                           NULL, NULL, &g_pMeshTexture ) );
-
-    // Set effect variables as needed
-    D3DXCOLOR colorMtrlDiffuse( 1.0f, 1.0f, 1.0f, 1.0f );
-    D3DXCOLOR colorMtrlAmbient( 0.35f, 0.35f, 0.35f, 0 );
-
-    V_RETURN( g_pEffect->SetValue( "g_MaterialAmbientColor", &colorMtrlAmbient, sizeof( D3DXCOLOR ) ) );
-    V_RETURN( g_pEffect->SetValue( "g_MaterialDiffuseColor", &colorMtrlDiffuse, sizeof( D3DXCOLOR ) ) );
-    V_RETURN( g_pEffect->SetTexture( "g_MeshTexture", g_pMeshTexture ) );
-
-    // Setup the camera's view parameters
-    D3DXVECTOR3 vecEye( 0.0f, 0.0f, -15.0f );
-    D3DXVECTOR3 vecAt ( 0.0f, 0.0f, -0.0f );
-    g_Camera.SetViewParams( &vecEye, &vecAt );
-    g_Camera.SetRadius( fObjectRadius * 3.0f, fObjectRadius * 0.5f, fObjectRadius * 10.0f );
-
-	return S_OK;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-HRESULT CMainView::OnResetDevice(IDirect3DDevice9* pd3dDevice, const D3DSURFACE_DESC* pBackBufferSurfaceDesc)
-{
-    HRESULT hr;
-
-    V_RETURN( g_DialogResourceManager.OnD3D9ResetDevice() );
-    V_RETURN( g_SettingsDlg.OnD3D9ResetDevice() );
-
-    if( g_pFont )
-        V_RETURN( g_pFont->OnResetDevice() );
-    if( g_pEffect )
-        V_RETURN( g_pEffect->OnResetDevice() );
-
-    // Create a sprite to help batch calls when drawing many lines of text
-    V_RETURN( D3DXCreateSprite( pd3dDevice, &g_pSprite ) );
-
-    for( int i = 0; i < MAX_LIGHTS; i++ )
-        g_LightControl[i].OnD3D9ResetDevice( pBackBufferSurfaceDesc );
-
-    // Setup the camera's projection parameters
-    float fAspectRatio = pBackBufferSurfaceDesc->Width / ( FLOAT )pBackBufferSurfaceDesc->Height;
-    g_Camera.SetProjParams( D3DX_PI / 4, fAspectRatio, 2.0f, 4000.0f );
-    g_Camera.SetWindow( pBackBufferSurfaceDesc->Width, pBackBufferSurfaceDesc->Height );
-    g_Camera.SetButtonMasks( MOUSE_LEFT_BUTTON, MOUSE_WHEEL, MOUSE_MIDDLE_BUTTON );
-
-    g_HUD.SetLocation( pBackBufferSurfaceDesc->Width - 170, 0 );
-    g_HUD.SetSize( 170, 170 );
-    g_SampleUI.SetLocation( pBackBufferSurfaceDesc->Width - 170, pBackBufferSurfaceDesc->Height - 300 );
-    g_SampleUI.SetSize( 170, 300 );
-
-	return S_OK;
+	return true;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
 bool CMainView::ModifyDeviceSettings(DXUTDeviceSettings* pDeviceSettings)
 {
-    assert( DXUT_D3D9_DEVICE == pDeviceSettings->ver );
+	return true;
+}
 
-    HRESULT hr;
-    IDirect3D9* pD3D = DXUTGetD3D9Object();
-    D3DCAPS9 caps;
+//-------------------------------------------------------------------------------------------------------------------
+HRESULT CMainView::OnD3D11CreateDevice(ID3D11Device* pd3dDevice, const DXGI_SURFACE_DESC* pBackBufferSurfaceDesc)
+{
+	HRESULT hr = S_OK;
 
-    V( pD3D->GetDeviceCaps( pDeviceSettings->d3d9.AdapterOrdinal,
-                            pDeviceSettings->d3d9.DeviceType,
-                            &caps ) );
+	auto pd3dImmediateContext = DXUTGetD3D11DeviceContext();
 
-    // If device doesn't support HW T&L or doesn't support 1.1 vertex shaders in HW 
-    // then switch to SWVP.
-    if( ( caps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT ) == 0 ||
-        caps.VertexShaderVersion < D3DVS_VERSION( 1, 1 ) )
-    {
-        pDeviceSettings->d3d9.BehaviorFlags = D3DCREATE_SOFTWARE_VERTEXPROCESSING;
-    }
+	DWORD dwShaderFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+#ifdef _DEBUG
+	// Set the D3DCOMPILE_DEBUG flag to embed debug information in the shaders.
+	// Setting this flag improves the shader debugging experience, but still allows 
+	// the shaders to be optimized and to run exactly the way they will run in 
+	// the release configuration of this program.
+	dwShaderFlags |= D3DCOMPILE_DEBUG;
 
-    // Debugging vertex shaders requires either REF or software vertex processing 
-    // and debugging pixel shaders requires REF.  
-#ifdef DEBUG_VS
-    if( pDeviceSettings->d3d9.DeviceType != D3DDEVTYPE_REF )
-    {
-        pDeviceSettings->d3d9.BehaviorFlags &= ~D3DCREATE_HARDWARE_VERTEXPROCESSING;
-        pDeviceSettings->d3d9.BehaviorFlags &= ~D3DCREATE_PUREDEVICE;
-        pDeviceSettings->d3d9.BehaviorFlags |= D3DCREATE_SOFTWARE_VERTEXPROCESSING;
-    }
+	// Disable optimizations to further improve shader debugging
+	dwShaderFlags |= D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
-#ifdef DEBUG_PS
-    pDeviceSettings->d3d9.DeviceType = D3DDEVTYPE_REF;
-#endif
-    // For the first device created if its a REF device, optionally display a warning dialog box
-    static bool s_bFirstTime = true;
-    if( s_bFirstTime )
-    {
-        s_bFirstTime = false;
-        if( pDeviceSettings->d3d9.DeviceType == D3DDEVTYPE_REF )
-            DXUTDisplaySwitchingToREFWarning( pDeviceSettings->ver );
-    }
 
-    return true;
-}
+	// Compile the vertex shader
+	ID3DBlob* pVSBlob = nullptr;
+	V_RETURN(D3DCompile(m_shaderString, strlen(m_shaderString) + 1, nullptr, nullptr, nullptr, "VS", "vs_4_0", dwShaderFlags, 0, &pVSBlob, 0));
 
-//-------------------------------------------------------------------------------------------------------------------
-void CMainView::OnFrameMove(double fTime, float fElapsedTime)
-{
-    // Update the camera's position based on user input 
-    g_Camera.FrameMove( fElapsedTime );
-}
+	// Create the vertex shader
+	hr = pd3dDevice->CreateVertexShader(pVSBlob->GetBufferPointer(), pVSBlob->GetBufferSize(), nullptr, &m_pVertexShader);
+	if (FAILED(hr))
+	{
+		SAFE_RELEASE(pVSBlob);
+		return hr;
+	}
 
-//--------------------------------------------------------------------------------------
-// Render the help and statistics text. This function uses the ID3DXFont interface for 
-// efficient text rendering.
-//--------------------------------------------------------------------------------------
-void RenderText( double fTime )
-{
-    // The helper object simply helps keep track of text position, and color
-    // and then it calls pFont->DrawText( m_pSprite, strMsg, -1, &rc, DT_NOCLIP, m_clr );
-    // If NULL is passed in as the sprite object, then it will work fine however the 
-    // pFont->DrawText() will not be batched together.  Batching calls will improves perf.
-    CDXUTTextHelper txtHelper( g_pFont, g_pSprite, 15 );
+	// Define the input layout
+	D3D11_INPUT_ELEMENT_DESC layout[] =
+	{
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+	};
+	UINT numElements = ARRAYSIZE(layout);
 
-    // Output statistics
-    txtHelper.Begin();
-    txtHelper.SetInsertionPos( 2, 0 );
-    txtHelper.SetForegroundColor( D3DXCOLOR( 1.0f, 1.0f, 0.0f, 1.0f ) );
-    txtHelper.DrawTextLine( DXUTGetFrameStats( DXUTIsVsyncEnabled() ) );
-    txtHelper.DrawTextLine( DXUTGetDeviceStats() );
+	// Create the input layout
+	hr = pd3dDevice->CreateInputLayout(layout, numElements, pVSBlob->GetBufferPointer(),
+		pVSBlob->GetBufferSize(), &m_pVertexLayout);
+	SAFE_RELEASE(pVSBlob);
+	if (FAILED(hr))
+		return hr;
 
-    txtHelper.SetForegroundColor( D3DXCOLOR( 1.0f, 1.0f, 1.0f, 1.0f ) );
-    txtHelper.DrawFormattedTextLine( L"fTime: %0.1f  sin(fTime): %0.4f", fTime, sin( fTime ) );
+	// Set the input layout
+	pd3dImmediateContext->IASetInputLayout(m_pVertexLayout);
 
-    // Draw help
-    if( g_bShowHelp )
-    {
-        const D3DSURFACE_DESC* pd3dsdBackBuffer = DXUTGetD3D9BackBufferSurfaceDesc();
-        txtHelper.SetInsertionPos( 2, pd3dsdBackBuffer->Height - 15 * 6 );
-        txtHelper.SetForegroundColor( D3DXCOLOR( 1.0f, 0.75f, 0.0f, 1.0f ) );
-        txtHelper.DrawTextLine( L"Controls:" );
+	// Compile the pixel shader
+	ID3DBlob* pPSBlob = nullptr;
+	V_RETURN(D3DCompile(m_shaderString, strlen(m_shaderString) + 1, nullptr, nullptr, nullptr, "PS", "ps_4_0", dwShaderFlags, 0, &pPSBlob, 0));
 
-        txtHelper.SetInsertionPos( 20, pd3dsdBackBuffer->Height - 15 * 5 );
-        txtHelper.DrawTextLine( L"Rotate model: Left mouse button\n"
-                                L"Rotate light: Right mouse button\n"
-                                L"Rotate camera: Middle mouse button\n"
-                                L"Zoom camera: Mouse wheel scroll\n" );
+	// Create the pixel shader
+	hr = pd3dDevice->CreatePixelShader(pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize(), nullptr, &m_pPixelShader);
+	SAFE_RELEASE(pPSBlob);
+	if (FAILED(hr))
+		return hr;
 
-        txtHelper.SetInsertionPos( 250, pd3dsdBackBuffer->Height - 15 * 5 );
-        txtHelper.DrawTextLine( L"Hide help: F1\n"
-                                L"Quit: ESC\n" );
-    }
-    else
-    {
-        txtHelper.SetForegroundColor( D3DXCOLOR( 1.0f, 1.0f, 1.0f, 1.0f ) );
-        txtHelper.DrawTextLine( L"Press F1 for help" );
-    }
-    txtHelper.End();
-}
+	// Create vertex buffer
+	SimpleVertex vertices[] =
+	{
+		{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+		{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
+		{ XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
+		{ XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT2(1.0f, 1.0f) },
 
-//-------------------------------------------------------------------------------------------------------------------
-void CMainView::OnFrameRender(IDirect3DDevice9* pd3dDevice, double fTime, float fElapsedTime)
-{
-   // If the settings dialog is being shown, then
-    // render it instead of rendering the app's scene
-    if( g_SettingsDlg.IsActive() )
-    {
-        g_SettingsDlg.OnRender( fElapsedTime );
-        return;
-    }
+		{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
+		{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+		{ XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT2(1.0f, 1.0f) },
+		{ XMFLOAT3(-1.0f, -1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
 
-    HRESULT hr;
-    D3DXMATRIXA16 mWorldViewProjection;
-    D3DXVECTOR3 vLightDir[MAX_LIGHTS];
-    D3DXCOLOR vLightDiffuse[MAX_LIGHTS];
-    UINT iPass, cPasses;
-    D3DXMATRIXA16 mWorld;
-    D3DXMATRIXA16 mView;
-    D3DXMATRIXA16 mProj;
+		{ XMFLOAT3(-1.0f, -1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
+		{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) },
+		{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+		{ XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT2(0.0f, 0.0f) },
 
-    // Clear the render target and the zbuffer 
-    V( pd3dDevice->Clear( 0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, D3DXCOLOR( 0.0f, 0.25f, 0.25f, 0.55f ), 1.0f,
-                          0 ) );
+		{ XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT2(1.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
+		{ XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT2(1.0f, 0.0f) },
 
-    // Render the scene
-    if( SUCCEEDED( pd3dDevice->BeginScene() ) )
-    {
-        // Get the projection & view matrix from the camera class
-        mWorld = g_mCenterWorld * *g_Camera.GetWorldMatrix();
-        mProj = *g_Camera.GetProjMatrix();
-        mView = *g_Camera.GetViewMatrix();
+		{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+		{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
 
-        mWorldViewProjection = mWorld * mView * mProj;
+		{ XMFLOAT3(-1.0f, -1.0f, 1.0f), XMFLOAT2(1.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT2(0.0f, 0.0f) },
+		{ XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT2(1.0f, 0.0f) },
+	};
 
-        // Render the light arrow so the user can visually see the light dir
-        for( int i = 0; i < g_nNumActiveLights; i++ )
-        {
-            D3DXCOLOR arrowColor = ( i == g_nActiveLight ) ? D3DXCOLOR( 1, 1, 0, 1 ) : D3DXCOLOR( 1, 1, 1, 1 );
-            V( g_LightControl[i].OnRender9( arrowColor, &mView, &mProj, g_Camera.GetEyePt() ) );
-            vLightDir[i] = g_LightControl[i].GetLightDirection();
-            vLightDiffuse[i] = g_fLightScale * D3DXCOLOR( 1, 1, 1, 1 );
-        }
+	D3D11_BUFFER_DESC bd;
+	ZeroMemory(&bd, sizeof(bd));
+	bd.Usage = D3D11_USAGE_DEFAULT;
+	bd.ByteWidth = sizeof(SimpleVertex) * 24;
+	bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+	bd.CPUAccessFlags = 0;
+	D3D11_SUBRESOURCE_DATA InitData;
+	ZeroMemory(&InitData, sizeof(InitData));
+	InitData.pSysMem = vertices;
+	V_RETURN(pd3dDevice->CreateBuffer(&bd, &InitData, &m_pVertexBuffer));
 
-        V( g_pEffect->SetValue( "g_LightDir", vLightDir, sizeof( D3DXVECTOR3 ) * MAX_LIGHTS ) );
-        V( g_pEffect->SetValue( "g_LightDiffuse", vLightDiffuse, sizeof( D3DXVECTOR4 ) * MAX_LIGHTS ) );
+	// Set vertex buffer
+	UINT stride = sizeof(SimpleVertex);
+	UINT offset = 0;
+	pd3dImmediateContext->IASetVertexBuffers(0, 1, &m_pVertexBuffer, &stride, &offset);
 
-        // Update the effect's variables.  Instead of using strings, it would 
-        // be more efficient to cache a handle to the parameter by calling 
-        // ID3DXEffect::GetParameterByName
-        V( g_pEffect->SetMatrix( "g_mWorldViewProjection", &mWorldViewProjection ) );
-        V( g_pEffect->SetMatrix( "g_mWorld", &mWorld ) );
-        V( g_pEffect->SetFloat( "g_fTime", ( float )fTime ) );
+	// Create index buffer
+	DWORD indices[] =
+	{
+		3,1,0,
+		2,1,3,
 
-        D3DXCOLOR vWhite = D3DXCOLOR( 1, 1, 1, 1 );
-        V( g_pEffect->SetValue( "g_MaterialDiffuseColor", &vWhite, sizeof( D3DXCOLOR ) ) );
-        V( g_pEffect->SetFloat( "g_fTime", ( float )fTime ) );
-        V( g_pEffect->SetInt( "g_nNumLights", g_nNumActiveLights ) );
+		6,4,5,
+		7,4,6,
 
-        // Render the scene with this technique 
-        // as defined in the .fx file
-        switch( g_nNumActiveLights )
-        {
-            case 1:
-                V( g_pEffect->SetTechnique( "RenderSceneWithTexture1Light" ) ); break;
-            case 2:
-                V( g_pEffect->SetTechnique( "RenderSceneWithTexture2Light" ) ); break;
-            case 3:
-                V( g_pEffect->SetTechnique( "RenderSceneWithTexture3Light" ) ); break;
-        }
+		11,9,8,
+		10,9,11,
 
+		14,12,13,
+		15,12,14,
 
-        // Apply the technique contained in the effect 
-        V( g_pEffect->Begin( &cPasses, 0 ) );
+		19,17,16,
+		18,17,19,
 
-        for( iPass = 0; iPass < cPasses; iPass++ )
-        {
-            V( g_pEffect->BeginPass( iPass ) );
+		22,20,21,
+		23,20,22
+	};
 
-            // The effect interface queues up the changes and performs them 
-            // with the CommitChanges call. You do not need to call CommitChanges if 
-            // you are not setting any parameters between the BeginPass and EndPass.
-            // V( g_pEffect->CommitChanges() );
+	bd.Usage = D3D11_USAGE_DEFAULT;
+	bd.ByteWidth = sizeof(DWORD) * 36;
+	bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+	bd.CPUAccessFlags = 0;
+	bd.MiscFlags = 0;
+	InitData.pSysMem = indices;
+	V_RETURN(pd3dDevice->CreateBuffer(&bd, &InitData, &m_pIndexBuffer));
 
-            // Render the mesh with the applied technique
-            V( g_pMesh->DrawSubset( 0 ) );
+	// Set index buffer
+	pd3dImmediateContext->IASetIndexBuffer(m_pIndexBuffer, DXGI_FORMAT_R32_UINT, 0);
 
-            V( g_pEffect->EndPass() );
-        }
-        V( g_pEffect->End() );
+	// Set primitive topology
+	pd3dImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        g_HUD.OnRender( fElapsedTime );
-        g_SampleUI.OnRender( fElapsedTime );
+	// Create the constant buffers
+	bd.Usage = D3D11_USAGE_DYNAMIC;
+	bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	bd.ByteWidth = sizeof(CBChangesEveryFrame);
+	V_RETURN(pd3dDevice->CreateBuffer(&bd, nullptr, &m_pCBChangesEveryFrame));
 
-        RenderText( fTime );
+	// Initialize the world matrices
+	m_World = XMMatrixIdentity();
 
-        V( pd3dDevice->EndScene() );
-    }
-}
-//-------------------------------------------------------------------------------------------------------------------
-void CMainView::OnLostDevice(void)
-{
-    g_DialogResourceManager.OnD3D9LostDevice();
-    g_SettingsDlg.OnD3D9LostDevice();
-    CDXUTDirectionWidget::StaticOnD3D9LostDevice();
-    if( g_pFont )
-        g_pFont->OnLostDevice();
-    if( g_pEffect )
-        g_pEffect->OnLostDevice();
-    SAFE_RELEASE( g_pSprite );
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-void CMainView::OnDestroyDevice(void)
-{
-    g_DialogResourceManager.OnD3D9DestroyDevice();
-    g_SettingsDlg.OnD3D9DestroyDevice();
-    CDXUTDirectionWidget::StaticOnD3D9DestroyDevice();
-    SAFE_RELEASE( g_pEffect );
-    SAFE_RELEASE( g_pFont );
-    SAFE_RELEASE( g_pMesh );
-    SAFE_RELEASE( g_pMeshTexture );
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-LRESULT CMainView::DX_MesssgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, bool* pbNoFurtherProcessing)
-{
-	// Always allow dialog resource manager calls to handle global messages
-    // so GUI state is updated correctly
-    *pbNoFurtherProcessing = g_DialogResourceManager.MsgProc( hWnd, uMsg, wParam, lParam );
-    if( *pbNoFurtherProcessing )
-        return 0;
-
-    if( g_SettingsDlg.IsActive() )
-    {
-        g_SettingsDlg.MsgProc( hWnd, uMsg, wParam, lParam );
-        return 0;
-    }
-
-    // Give the dialogs a chance to handle the message first
-    *pbNoFurtherProcessing = g_HUD.MsgProc( hWnd, uMsg, wParam, lParam );
-    if( *pbNoFurtherProcessing )
-        return 0;
-    *pbNoFurtherProcessing = g_SampleUI.MsgProc( hWnd, uMsg, wParam, lParam );
-    if( *pbNoFurtherProcessing )
-        return 0;
-
-    g_LightControl[g_nActiveLight].HandleMessages( hWnd, uMsg, wParam, lParam );
-
-    // Pass all remaining windows messages to camera so it can respond to user input
-    g_Camera.HandleMessages( hWnd, uMsg, wParam, lParam );
+	// Initialize the view matrix
+	static const XMVECTORF32 s_Eye = { 0.0f, 3.0f, -6.0f, 0.f };
+	static const XMVECTORF32 s_At = { 0.0f, 1.0f, 0.0f, 0.f };
+	static const XMVECTORF32 s_Up = { 0.0f, 1.0f, 0.0f, 0.f };
+	m_View = XMMatrixLookAtLH(s_Eye, s_At, s_Up);
 
 	return S_OK;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-void CMainView::DX_KeyboardProc(UINT nChar, bool bKeyDown, bool bAltDown)
+HRESULT CMainView::OnD3D11ResizedSwapChain(ID3D11Device* pd3dDevice, IDXGISwapChain* pSwapChain,
+	const DXGI_SURFACE_DESC* pBackBufferSurfaceDesc)
 {
-    if( bKeyDown )
-    {
-        switch( nChar )
-        {
-            case VK_F1:
-                g_bShowHelp = !g_bShowHelp; break;
-        }
-    }
+	// Setup the projection parameters
+	float fAspect = static_cast<float>(pBackBufferSurfaceDesc->Width) / static_cast<float>(pBackBufferSurfaceDesc->Height);
+	m_Projection = XMMatrixPerspectiveFovLH(XM_PI * 0.25f, fAspect, 0.1f, 100.0f);
+
+	return S_OK;
 }
 
+//-------------------------------------------------------------------------------------------------------------------
+void CMainView::OnFrameMove(double fTime, float fElapsedTime)
+{
+	// Rotate cube around the origin
+	m_World = XMMatrixRotationY(60.0f * XMConvertToRadians((float)fTime));
 
+	// Modify the color
+	if (m_colorIndex == 0) {
+		m_vMeshColor.x = (sinf((float)fTime * 1.0f) + 1.0f) * 0.5f;
+		m_vMeshColor.y = (cosf((float)fTime * 3.0f) + 1.0f) * 0.5f;
+		m_vMeshColor.z = (sinf((float)fTime * 5.0f) + 1.0f) * 0.5f;
+	}
+	else if(m_colorIndex == 1) {
+		m_vMeshColor = XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f);
+	}
+	else {
+		m_vMeshColor = XMFLOAT4(0.0f, 0.0f, 1.0f, 0.0f);
+	}
+
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+void CMainView::OnD3D11FrameRender(ID3D11Device* pd3dDevice, ID3D11DeviceContext* pd3dImmediateContext,
+	double fTime, float fElapsedTime)
+{
+	//
+	// Clear the back buffer
+	//
+	auto pRTV = DXUTGetD3D11RenderTargetView();
+	pd3dImmediateContext->ClearRenderTargetView(pRTV, Colors::MidnightBlue);
+
+	//
+	// Clear the depth stencil
+	//
+	auto pDSV = DXUTGetD3D11DepthStencilView();
+	pd3dImmediateContext->ClearDepthStencilView(pDSV, D3D11_CLEAR_DEPTH, 1.0, 0);
+
+	XMMATRIX mWorldViewProjection = m_World * m_View * m_Projection;
+
+	// Update constant buffer that changes once per frame
+	HRESULT hr;
+	D3D11_MAPPED_SUBRESOURCE MappedResource;
+	V(pd3dImmediateContext->Map(m_pCBChangesEveryFrame, 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedResource));
+	auto pCB = reinterpret_cast<CBChangesEveryFrame*>(MappedResource.pData);
+	XMStoreFloat4x4(&pCB->mWorldViewProj, XMMatrixTranspose(mWorldViewProjection));
+	XMStoreFloat4x4(&pCB->mWorld, XMMatrixTranspose(m_World));
+	pCB->vMeshColor = m_vMeshColor;
+	pd3dImmediateContext->Unmap(m_pCBChangesEveryFrame, 0);
+
+	//
+	// Render the cube
+	//
+	pd3dImmediateContext->VSSetShader(m_pVertexShader, nullptr, 0);
+	pd3dImmediateContext->VSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
+	pd3dImmediateContext->PSSetShader(m_pPixelShader, nullptr, 0);
+	pd3dImmediateContext->PSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
+	pd3dImmediateContext->DrawIndexed(36, 0, 0);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+void CMainView::OnD3D11ReleasingSwapChain(void)
+{
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+void CMainView::OnD3D11DestroyDevice(void)
+{
+	SAFE_RELEASE(m_pVertexBuffer);
+	SAFE_RELEASE(m_pIndexBuffer);
+	SAFE_RELEASE(m_pVertexLayout);
+	SAFE_RELEASE(m_pVertexShader);
+	SAFE_RELEASE(m_pPixelShader);
+	SAFE_RELEASE(m_pCBChangesEveryFrame);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+LRESULT CMainView::MsgProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+	bool* pbNoFurtherProcessing)
+{
+	return 0;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+void CMainView::OnKeyboard(UINT nChar, bool bKeyDown, bool bAltDown)
+{
+	if (bKeyDown)
+	{
+		switch (nChar)
+		{
+		case VK_F1: // Change as needed                
+			break;
+		}
+	}
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+bool CMainView::OnDeviceRemoved(void)
+{
+	return true;
+}
